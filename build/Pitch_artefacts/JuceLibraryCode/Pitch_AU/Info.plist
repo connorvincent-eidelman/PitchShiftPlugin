@@ -4,15 +4,15 @@
 <plist>
   <dict>
     <key>CFBundleExecutable</key>
-    <string>Pitch Shift</string>
+    <string>Pitch</string>
     <key>CFBundleIconFile</key>
     <string></string>
     <key>CFBundleIdentifier</key>
-    <string>com.ConnorVE.Pitch</string>
+    <string>com.Connor.Pitch</string>
     <key>CFBundleName</key>
-    <string>Pitch Shift</string>
+    <string>Pitch</string>
     <key>CFBundleDisplayName</key>
-    <string>Pitch Shift</string>
+    <string>Pitch</string>
     <key>CFBundlePackageType</key>
     <string>BNDL</string>
     <key>CFBundleSignature</key>
@@ -29,17 +29,17 @@
     <array>
       <dict>
         <key>name</key>
-        <string>ConnorVE: Pitch Shift</string>
+        <string>Connor: Pitch</string>
         <key>description</key>
-        <string>Pitch Shift</string>
+        <string>Pitch</string>
         <key>factoryFunction</key>
-        <string>Pitch_ShiftAUFactory</string>
+        <string>PitchAUFactory</string>
         <key>manufacturer</key>
-        <string>YNAM</string>
+        <string>CNOR</string>
         <key>type</key>
         <string>aufx</string>
         <key>subtype</key>
-        <string>MANP</string>
+        <string>PTCH</string>
         <key>version</key>
         <integer>256</integer>
         <key>resourceUsage</key>

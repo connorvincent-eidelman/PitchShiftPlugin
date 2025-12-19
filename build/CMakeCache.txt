@@ -149,7 +149,7 @@ CMAKE_PROJECT_DESCRIPTION:STATIC=
 CMAKE_PROJECT_HOMEPAGE_URL:STATIC=
 
 //Value Computed by CMake
-CMAKE_PROJECT_NAME:STATIC=ManipulatorClone
+CMAKE_PROJECT_NAME:STATIC=Pitch
 
 //Value Computed by CMake
 CMAKE_PROJECT_SPDX_LICENSE:STATIC=
@@ -272,13 +272,13 @@ JUCE_TOOL_INSTALL_DIR:STRING=bin/JUCE-8.0.12
 JUCE_WEBVIEW2_PACKAGE_LOCATION:BOOL=OFF
 
 //Value Computed by CMake
-ManipulatorClone_BINARY_DIR:STATIC=/Users/connorv-e/Pitch Shift Plugin/build
+Pitch_BINARY_DIR:STATIC=/Users/connorv-e/Pitch Shift Plugin/build
 
 //Value Computed by CMake
-ManipulatorClone_IS_TOP_LEVEL:STATIC=ON
+Pitch_IS_TOP_LEVEL:STATIC=ON
 
 //Value Computed by CMake
-ManipulatorClone_SOURCE_DIR:STATIC=/Users/connorv-e/Pitch Shift Plugin
+Pitch_SOURCE_DIR:STATIC=/Users/connorv-e/Pitch Shift Plugin
 
 //Path to a library.
 juce_found_AVFoundation:FILEPATH=/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/System/Library/Frameworks/AVFoundation.framework
