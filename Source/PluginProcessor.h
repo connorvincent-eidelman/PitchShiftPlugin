@@ -16,6 +16,10 @@ public:
 
     const juce::String getName() const override;
 
+    juce::AudioProcessorValueTreeState apvts;
+
+    static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+
     //==============================================================================
     bool acceptsMidi() const override;
     bool producesMidi() const override;

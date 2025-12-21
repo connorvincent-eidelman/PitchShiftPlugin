@@ -16,6 +16,9 @@ public:
 
 private:
     PitchShiftPluginAudioProcessor& audioProcessor;
+    juce::Slider stereoWidthSlider;
+    using Attachment = juce::AudioProcessorValueTreeState::SliderAttachment;
+    std::unique_ptr<Attachment> stereoWidthAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(
         PitchShiftPluginAudioProcessorEditor)

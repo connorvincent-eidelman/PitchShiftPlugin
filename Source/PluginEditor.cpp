@@ -8,6 +8,14 @@ PitchShiftPluginAudioProcessorEditor(
       audioProcessor(p)
 {
     setSize(400, 200);
+
+    stereoWidthSlider.setSliderStyle(juce::Slider::Rotary);
+    stereoWidthSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);
+    stereoWidthSlider.setPopupDisplayEnabled(true, false, this);
+    addAndMakeVisible(stereoWidthSlider);
+
+    stereoWidthAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        audioProcessor.apvts, "stereoWidth", stereoWidthSlider);
 }
 
 PitchShiftPluginAudioProcessorEditor::
@@ -27,4 +35,6 @@ void PitchShiftPluginAudioProcessorEditor::paint(
         1);
 }
 
-void PitchShiftPluginAudioProcessorEditor::resized() {}
+void PitchShiftPluginAudioProcessorEditor::resized() {
+    stereoWidthSlider.setBounds (getLocalBounds().reduced (40));
+}
