@@ -20,15 +20,18 @@ private:
     juce::Slider smearSlider;
     juce::Slider pitchSlider;
     juce::Slider formantSlider;
+    juce::Slider smoothGrainsSlider;
     juce::Label stereoLabel;
     juce::Label smearLabel;
     juce::Label pitchLabel;
     juce::Label formantLabel;
+    juce::Label smoothGrainsLabel;
     using Attachment = juce::AudioProcessorValueTreeState::SliderAttachment;
     std::unique_ptr<Attachment> stereoWidthAttachment;
     std::unique_ptr<Attachment> smearAttachment;
     std::unique_ptr<Attachment> pitchAttachment;
     std::unique_ptr<Attachment> formantAttachment;
+    std::unique_ptr<Attachment> smoothGrainsAttachment;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(
         PitchShiftPluginAudioProcessorEditor)

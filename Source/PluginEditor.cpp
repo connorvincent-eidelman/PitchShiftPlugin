@@ -60,6 +60,19 @@ PitchShiftPluginAudioProcessorEditor(
     formantLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     formantLabel.setFont(juce::Font(12.0f, juce::Font::bold));
     addAndMakeVisible(formantLabel);
+
+    // Smooth Grains micro-slider (between Pitch and Formant)
+    smoothGrainsSlider.setSliderStyle(juce::Slider::LinearHorizontal);
+    smoothGrainsSlider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+    smoothGrainsSlider.setPopupDisplayEnabled(true, false, this);
+    addAndMakeVisible(smoothGrainsSlider);
+    smoothGrainsAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
+        audioProcessor.apvts, "smoothGrains", smoothGrainsSlider);
+    smoothGrainsLabel.setText("Smooth", juce::dontSendNotification);
+    smoothGrainsLabel.setJustificationType(juce::Justification::centred);
+    smoothGrainsLabel.setColour(juce::Label::textColourId, juce::Colours::white);
+    smoothGrainsLabel.setFont(juce::Font(10.0f));
+    addAndMakeVisible(smoothGrainsLabel);
 }
 
 PitchShiftPluginAudioProcessorEditor::
@@ -109,4 +122,9 @@ void PitchShiftPluginAudioProcessorEditor::resized() {
     smearLabel.setBounds(k01.withY(std::max(0, k01.getY() - labelH)).withHeight(labelH));
     pitchLabel.setBounds(k10.withY(std::max(0, k10.getY() - labelH)).withHeight(labelH));
     formantLabel.setBounds(k11.withY(std::max(0, k11.getY() - labelH)).withHeight(labelH));
+
+    // position Smooth Grains slider centered between bottom knobs
+    auto smoothArea = juce::Rectangle<int>((k10.getCentreX() + k11.getCentreX())/2 - 80, k10.getBottom() - 36, 160, 16);
+    smoothGrainsSlider.setBounds(smoothArea);
+    smoothGrainsLabel.setBounds(smoothArea.withY(smoothArea.getY() - 14).withHeight(12));
 }

@@ -28,6 +28,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout PitchShiftPluginAudioProcess
             "Formant",
             NormalisableRange<float>(0.5f, 2.0f, 0.01f),
             1.0f)
+        ,
+        std::make_unique<AudioParameterFloat>(
+            "smoothGrains",
+            "Smooth Grains",
+            NormalisableRange<float>(0.0f, 1.0f, 0.01f),
+            1.0f)
     };
 }
 
@@ -110,38 +116,60 @@ void PitchShiftPluginAudioProcessor::processBlock(
             float procL = inL;
             float procR = inR;
 
+            // read pitch/formant/smooth params
+            float pitchSemitones = 0.0f;
+            if (auto pp = apvts.getRawParameterValue("pitch"))
+                pitchSemitones = pp->load();
+            float smoothGrains = 1.0f;
+            if (auto sp = apvts.getRawParameterValue("smoothGrains"))
+                smoothGrains = sp->load();
+
+            // playback rate from pitch in semitones
+            float playbackRate = std::pow(2.0f, pitchSemitones / 12.0f);
+
             if (smearAmount > 0.001f && gBufferSize > 0 && grainSizeSamples > 0)
             {
                 // write incoming audio into grain buffer
                 gbufL[grainPos] = inL;
                 gbufR[grainPos] = inR;
 
-                // hop size scales with smear: more smear -> longer hops (less frequent changes)
-                int hopSize = juce::jlimit(1, grainSizeSamples * 4, (int)juce::jmap(smearAmount, 64.0f, (float)(grainSizeSamples * 4)));
+                // determine hop size influenced by smear, playbackRate and smoothGrains
+                float baseHop = juce::jmap(smearAmount, 64.0f, (float)(grainSizeSamples * 4));
+                int hopSize = juce::jlimit(1, grainSizeSamples * 4, (int)(baseHop * playbackRate * (1.0f - 0.9f * smoothGrains)));
 
-                // read position inside the current grain
-                int readPos = (grainStart + grainCounter) % gBufferSize;
+                // fractional read position within grain, supports variable playbackRate
+                float readPosF = grainReadPos;
+                // compute integer indices and frac for interpolation
+                int idx0 = (grainStart + (int)readPosF) % gBufferSize;
+                int idx1 = idx0 + 1; if (idx1 >= gBufferSize) idx1 = 0;
+                float frac = readPosF - (int)readPosF;
 
-                // cosine crossfade envelope (0..1)
-                float env = 0.5f - 0.5f * std::cos(juce::MathConstants<float>::twoPi * (float)grainCounter / (float)grainSizeSamples);
+                float s0L = gbufL[idx0];
+                float s1L = gbufL[idx1];
+                float s0R = gbufR[idx0];
+                float s1R = gbufR[idx1];
 
-                float grainSampleL = gbufL[readPos] * env;
-                float grainSampleR = gbufR[readPos] * env;
+                float grainSampleL = s0L * (1.0f - frac) + s1L * frac;
+                float grainSampleR = s0R * (1.0f - frac) + s1R * frac;
+
+                // envelope based on fractional position within grain length
+                float envPos = grainReadPos / (float)grainSizeSamples;
+                if (envPos < 0.0f) envPos = 0.0f;
+                if (envPos > 1.0f) envPos = 1.0f;
+                float env = 0.5f - 0.5f * std::cos(juce::MathConstants<float>::twoPi * envPos);
 
                 // blend grain with dry signal
-                procL = grainSampleL + inL * (1.0f - env);
-                procR = grainSampleR + inR * (1.0f - env);
+                procL = grainSampleL * env + inL * (1.0f - env);
+                procR = grainSampleR * env + inR * (1.0f - env);
 
-                // advance grain counters
-                grainCounter++;
-                if (grainCounter >= grainSizeSamples)
-                    grainCounter = 0;
+                // advance fractional read position by playback rate
+                grainReadPos += playbackRate;
+                if (grainReadPos >= (float)grainSizeSamples)
+                    grainReadPos -= (float)grainSizeSamples;
 
-                // update grainStart at hop intervals
+                // advance grain write pos and update grainStart at hop intervals
                 if ((grainPos % hopSize) == 0)
-                {
                     grainStart = grainPos;
-                }
 
                 grainPos++;
                 if (grainPos >= gBufferSize)

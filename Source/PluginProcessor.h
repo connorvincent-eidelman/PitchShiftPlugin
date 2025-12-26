@@ -60,4 +60,5 @@ private:
     int grainPos = 0;
     int grainStart = 0;
     int grainCounter = 0;
+    float grainReadPos = 0.0f; // fractional read position for pitch playback
 };
