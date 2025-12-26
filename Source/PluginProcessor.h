@@ -41,4 +41,23 @@ public:
 
 private:
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(PitchShiftPluginAudioProcessor)
+    // Smear buffer for Manipulator-style micro-time diffusion
+    juce::AudioBuffer<float> smearBuffer;
+    int smearWritePos = 0;
+    // Smoothed fractional delay state to avoid per-sample noise
+    float smearDelayL = 0.0f;
+    float smearDelayR = 0.0f;
+    juce::Random rng;
+    float smearSmoothFactor = 0.001f; // smoothing for random modulation (slow)
+    // target delay and update counter to avoid per-sample random changes
+    float smearTargetL = 0.0f;
+    float smearTargetR = 0.0f;
+    int smearTargetCounter = 0;
+    int smearTargetInterval = 1024; // update target every N samples
+    // --- Granular smear members (Manipulator-style)
+    juce::AudioBuffer<float> grainBuffer;
+    int grainSizeSamples = 0;
+    int grainPos = 0;
+    int grainStart = 0;
+    int grainCounter = 0;
 };
