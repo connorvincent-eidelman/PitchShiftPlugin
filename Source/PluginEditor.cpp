@@ -7,7 +7,7 @@ PitchShiftPluginAudioProcessorEditor(
     : AudioProcessorEditor(&p),
       audioProcessor(p)
 {
-    setSize(400, 200);
+    setSize(600, 320);
 
     stereoWidthSlider.setSliderStyle(juce::Slider::Rotary);
     stereoWidthSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);

@@ -40,4 +40,6 @@ target_compile_definitions(Pitch
 target_link_libraries(Pitch
     PRIVATE
         juce::juce_audio_utils
+        juce::juce_dsp
+        juce::juce_audio_processors
 )

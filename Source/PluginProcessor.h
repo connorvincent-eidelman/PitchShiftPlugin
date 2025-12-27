@@ -1,5 +1,6 @@
 #pragma once
 #include <JuceHeader.h>
+#include <deque>
 
 class PitchShiftPluginAudioProcessor : public juce::AudioProcessor
 {
@@ -61,4 +62,19 @@ private:
     int grainStart = 0;
     int grainCounter = 0;
     float grainReadPos = 0.0f; // fractional read position for pitch playback
+    // --- FFT-based formant shifter members
+    int fftOrder = 10; // 2^10 = 1024
+    int fftSize = 1 << fftOrder;
+    int fftHop = fftSize / 4;
+    juce::dsp::FFT fft{ fftOrder };
+    juce::dsp::WindowingFunction<float> window{ (size_t)fftSize, juce::dsp::WindowingFunction<float>::hann };
+    std::vector<float> fftBufferL;
+    std::vector<float> fftBufferR;
+    int fftWritePos = 0;
+    std::deque<float> procOutL;
+    std::deque<float> procOutR;
+    // dry-path delay to match FFT latency
+    std::vector<float> dryDelayL;
+    std::vector<float> dryDelayR;
+    int dryDelayPos = 0;
 };
