@@ -55,7 +55,7 @@ PitchShiftPluginAudioProcessorEditor(
     addAndMakeVisible(formantSlider);
     formantAttachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
         audioProcessor.apvts, "formant", formantSlider);
-    formantLabel.setText("Formant", juce::dontSendNotification);
+    formantLabel.setText("Formant (st)", juce::dontSendNotification);
     formantLabel.setJustificationType(juce::Justification::centred);
     formantLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     formantLabel.setFont(juce::Font(12.0f, juce::Font::bold));

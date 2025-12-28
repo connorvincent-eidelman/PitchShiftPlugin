@@ -26,9 +26,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout PitchShiftPluginAudioProcess
             0.0f),
         std::make_unique<AudioParameterFloat>(
             "formant",
-            "Formant",
-            NormalisableRange<float>(0.5f, 2.0f, 0.01f),
-            1.0f)
+            "Formant (semitones)",
+            NormalisableRange<float>(-12.0f, 12.0f, 0.01f),
+            0.0f)
         ,
         std::make_unique<AudioParameterFloat>(
             "smoothGrains",
@@ -86,11 +86,23 @@ void PitchShiftPluginAudioProcessor::prepareToPlay(double sampleRate, int /*samp
     fftWritePos = 0;
     procOutL.clear();
     procOutR.clear();
+    // initialize phase-vocoder state arrays for half-spectrum
+    int half = fftSize / 2;
+    prevPhaseL.assign(half + 1, 0.0f);
+    prevPhaseR.assign(half + 1, 0.0f);
+    synPhaseL.assign(half + 1, 0.0f);
+    synPhaseR.assign(half + 1, 0.0f);
+    formantInitialized = false;
     // prepare dry delay to match FFT latency
     dryDelayL.assign(fftSize, 0.0f);
     dryDelayR.assign(fftSize, 0.0f);
     dryDelayPos = 0;
     setLatencySamples(fftSize);
+
+    // initialize formant smoothing state
+    smoothedFormantRatio.reset(sampleRate, 0.05); // 50 ms smoothing
+    smoothedFormantRatio.setCurrentAndTargetValue(1.0f);
+    lastFormantRatio = 1.0f;
 }
 
 void PitchShiftPluginAudioProcessor::releaseResources() {}
@@ -126,9 +138,22 @@ void PitchShiftPluginAudioProcessor::processBlock(
         float smoothGrains = 1.0f;
         if (auto sp = apvts.getRawParameterValue("smoothGrains"))
             smoothGrains = sp->load();
-        float formantRatio = 1.0f;
+        // compute target formant ratio from semitones, clamp and smooth it
+        float formantSemitones = 0.0f;
         if (auto fp = apvts.getRawParameterValue("formant"))
-            formantRatio = fp->load();
+            formantSemitones = fp->load();
+        float targetFormantRatio = std::pow(2.0f, formantSemitones / 12.0f);
+        // constrain to a musical, safe range to avoid extreme artifacts
+        targetFormantRatio = juce::jlimit(0.5f, 2.0f, targetFormantRatio);
+        smoothedFormantRatio.setTargetValue(targetFormantRatio);
+        // advance smoothed value once per block and use that for processing
+        float formantRatio = smoothedFormantRatio.getNextValue();
+        // if formant changed meaningfully, reset phase-vocoder state to avoid discontinuities
+        if (std::abs(formantRatio - lastFormantRatio) > 0.001f)
+        {
+            formantInitialized = false;
+        }
+        lastFormantRatio = formantRatio;
 
         // playback rate from pitch in semitones
         float playbackRate = std::pow(2.0f, pitchSemitones / 12.0f);
@@ -150,7 +175,9 @@ void PitchShiftPluginAudioProcessor::processBlock(
             float procL = inL;
             float procR = inR;
 
-            if (smearAmount > 0.001f && gBufferSize > 0 && grainSizeSamples > 0)
+            // couple smear to formant movements to avoid chaotic interactions
+            float effectiveSmear = smearAmount * (1.0f - juce::jmin(1.0f, std::abs(formantSemitones) / 12.0f));
+            if (effectiveSmear > 0.001f && gBufferSize > 0 && grainSizeSamples > 0)
             {
                 // write incoming audio into grain buffer
                 gbufL[grainPos] = inL;
@@ -198,20 +225,19 @@ void PitchShiftPluginAudioProcessor::processBlock(
             }
 
             // --- Formant shifter: run FFT frames when buffer fills, keep procOut fifo
-            float formantRatio = 1.0f;
-            if (auto fp = apvts.getRawParameterValue("formant"))
-                formantRatio = fp->load();
-
-            // push proc samples into fftBuffer
-            fftBufferL[fftWritePos] = procL;
-            fftBufferR[fftWritePos] = procR;
-            fftWritePos++;
-
-            // when fftBuffer is full, perform FFT-based formant warp and overlap-add the result into procOut FIFOs
-            if (fftWritePos >= fftSize)
+            // Only run FFT/formant pipeline when formant parameter is non-zero (per-feature bypass)
+            if (std::abs(formantSemitones) > 1e-6f)
             {
-                // prepare complex arrays (use std::complex to match FFT Complex type)
-                std::vector<std::complex<float>> dataL(fftSize), dataR(fftSize);
+                // push proc samples into fftBuffer
+                fftBufferL[fftWritePos] = procL;
+                fftBufferR[fftWritePos] = procR;
+                fftWritePos++;
+
+                // when fftBuffer is full, perform FFT-based formant warp and overlap-add the result into procOut FIFOs
+                if (fftWritePos >= fftSize)
+                {
+                    // prepare complex arrays (use std::complex to match FFT Complex type)
+                    std::vector<std::complex<float>> dataL(fftSize), dataR(fftSize);
 
                 // apply analysis window and fill complex arrays
                 std::vector<float> tempInL(fftSize), tempInR(fftSize);
@@ -249,6 +275,36 @@ void PitchShiftPluginAudioProcessor::processBlock(
                     phR[k] = std::atan2(im, re);
                 }
 
+                // --- Phase-vocoder: compute instantaneous frequency per analysis bin
+                std::vector<float> instFreqL(half+1), instFreqR(half+1);
+                const float twoPi = juce::MathConstants<float>::twoPi;
+                // initialize phase arrays to avoid large jumps on first active frame
+                if (!formantInitialized)
+                {
+                    for (int k = 0; k <= half; ++k)
+                    {
+                        prevPhaseL[k] = phL[k];
+                        prevPhaseR[k] = phR[k];
+                        synPhaseL[k] = phL[k];
+                        synPhaseR[k] = phR[k];
+                    }
+                    formantInitialized = true;
+                }
+                for (int k = 0; k <= half; ++k)
+                {
+                    float omega = twoPi * (float)k / (float)fftSize; // rad/sample
+                    float delta = phL[k] - prevPhaseL[k] - omega * (float)fftHop;
+                    // wrap to [-pi, pi]
+                    delta = std::fmod(delta + juce::MathConstants<float>::pi, twoPi) - juce::MathConstants<float>::pi;
+                    instFreqL[k] = omega + delta / (float)fftHop;
+                    prevPhaseL[k] = phL[k];
+
+                    delta = phR[k] - prevPhaseR[k] - omega * (float)fftHop;
+                    delta = std::fmod(delta + juce::MathConstants<float>::pi, twoPi) - juce::MathConstants<float>::pi;
+                    instFreqR[k] = omega + delta / (float)fftHop;
+                    prevPhaseR[k] = phR[k];
+                }
+
                 // warp magnitudes by formantRatio (scale frequency axis)
                 std::vector<float> newMagL(half+1), newMagR(half+1);
                 for (int k = 0; k <= half; ++k)
@@ -272,22 +328,55 @@ void PitchShiftPluginAudioProcessor::processBlock(
                         newMagL[k] = magL[i0] * (1.0f - frac) + magL[i1] * frac;
                         newMagR[k] = magR[i0] * (1.0f - frac) + magR[i1] * frac;
                     }
+                    // gentle spectral smoothing to reduce zipper/grain noise
+                    const float magSmooth = 0.85f;
+                    if (k > 0 && k < half)
+                    {
+                        newMagL[k] = magSmooth * newMagL[k] + (1.0f - magSmooth) * magL[k];
+                        newMagR[k] = magSmooth * newMagR[k] + (1.0f - magSmooth) * magR[k];
+                    }
                 }
 
-                // rebuild complex spectrum with original phases but warped magnitudes
+                // rebuild complex spectrum using interpolated instantaneous frequency -> accumulate synthesis phase
                 std::vector<std::complex<float>> outDataL(fftSize), outDataR(fftSize);
                 for (int k = 0; k <= half; ++k)
                 {
+                    // interpolate instantaneous frequency from source position
+                    float src = (float)k / formantRatio;
+                    float instL = 0.0f, instR = 0.0f;
+                    if (src <= 0.0f)
+                    {
+                        instL = instFreqL[0];
+                        instR = instFreqR[0];
+                    }
+                    else if (src >= half)
+                    {
+                        instL = instFreqL[half];
+                        instR = instFreqR[half];
+                    }
+                    else
+                    {
+                        int i0 = (int)std::floor(src);
+                        int i1 = i0 + 1;
+                        float frac = src - (float)i0;
+                        instL = instFreqL[i0] * (1.0f - frac) + instFreqL[i1] * frac;
+                        instR = instFreqR[i0] * (1.0f - frac) + instFreqR[i1] * frac;
+                    }
+
+                    // accumulate synthesis phase (synPhase stored across frames)
+                    synPhaseL[k] += instL * (float)fftHop;
+                    synPhaseR[k] += instR * (float)fftHop;
+
                     float mL = newMagL[k];
-                    float pL = phL[k];
+                    float pL = synPhaseL[k];
                     outDataL[k] = std::complex<float>(mL * std::cos(pL), mL * std::sin(pL));
 
                     float mR = newMagR[k];
-                    float pR = phR[k];
+                    float pR = synPhaseR[k];
                     outDataR[k] = std::complex<float>(mR * std::cos(pR), mR * std::sin(pR));
+
                     if (k > 0 && k < half)
                     {
-                        // mirror negative frequencies using complex conjugate
                         int nk = fftSize - k;
                         outDataL[nk] = std::conj(outDataL[k]);
                         outDataR[nk] = std::conj(outDataR[k]);
@@ -331,9 +420,10 @@ void PitchShiftPluginAudioProcessor::processBlock(
                     fftBufferR[n] = 0.0f;
                 }
                 fftWritePos = fftSize - shift;
+                }
             }
 
-            // consume processed output if available; otherwise use delayed dry to avoid switching to immediate sample
+            // consume processed output if available
             float outFFT_L = 0.0f, outFFT_R = 0.0f;
             if (!procOutL.empty())
             {
@@ -352,17 +442,24 @@ void PitchShiftPluginAudioProcessor::processBlock(
             dryDelayPos++;
             if (dryDelayPos >= fftSize) dryDelayPos = 0;
 
+            bool processingActive = (effectiveSmear > 0.001f) || (std::abs(pitchSemitones) > 1e-6f) || (std::abs(formantSemitones) > 1e-6f);
             if (!procOutL.empty() || !procOutR.empty())
             {
                 // if there is FFT output, use it
                 procL = outFFT_L;
                 procR = outFFT_R;
             }
-            else
+            else if (processingActive)
             {
-                // fallback to delayed dry (aligned) instead of immediate proc
+                // when processing is active but FFT hasn't produced output yet, use aligned delayed dry
                 procL = delayedDryL;
                 procR = delayedDryR;
+            }
+            else
+            {
+                // processing inactive: use immediate dry to avoid latency/gaps
+                procL = inL;
+                procR = inR;
             }
 
             // apply stereo width to processed signal (mid/side)

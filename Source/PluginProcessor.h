@@ -73,6 +73,15 @@ private:
     int fftWritePos = 0;
     std::deque<float> procOutL;
     std::deque<float> procOutR;
+    // phase-vocoder state (per half-spectrum)
+    std::vector<float> prevPhaseL;
+    std::vector<float> prevPhaseR;
+    std::vector<float> synPhaseL;
+    std::vector<float> synPhaseR;
+    bool formantInitialized = false;
+    // --- Formant smoothing & safety
+    float lastFormantRatio = 1.0f;
+    juce::SmoothedValue<float> smoothedFormantRatio;
     // dry-path delay to match FFT latency
     std::vector<float> dryDelayL;
     std::vector<float> dryDelayR;
