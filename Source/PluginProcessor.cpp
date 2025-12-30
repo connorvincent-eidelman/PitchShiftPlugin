@@ -152,9 +152,9 @@ void PitchShiftPluginAudioProcessor::processBlock(
         if (numSamples > 0)
         {
             setDebugText(
-                "procOut=" + juce::String(procOutL.size()) +
+                "procOut=" + juce::String((int)procOutL.size()) +
                 " fftWrite=" + juce::String(fftWritePos) +
-                " primed=" + juce::String(fftPrimed) +
+                " primed=" + juce::String(fftPrimed ? 1 : 0) +
                 " crossfade=" + juce::String(crossfadeSamplesRemaining) +
                 " OLA0=" + juce::String(olaL.empty() ? 0.0f : olaL[0])
             );
