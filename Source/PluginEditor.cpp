@@ -138,6 +138,7 @@ void PitchShiftPluginAudioProcessorEditor::resized() {
 
 void PitchShiftPluginAudioProcessorEditor::timerCallback()
 {
-    if (audioProcessor.debugDirty.exchange(false))
-        debugLabel.setText(audioProcessor.debugText, juce::dontSendNotification);
+    auto text = audioProcessor.consumeDebugText();
+    if (!text.isEmpty())
+        debugLabel.setText(text, juce::dontSendNotification);
 }

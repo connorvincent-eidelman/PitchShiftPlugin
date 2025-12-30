@@ -46,6 +46,16 @@ void PitchShiftPluginAudioProcessor::setDebugText(const juce::String& s)
     debugDirty.store(true);
 }
 
+juce::String PitchShiftPluginAudioProcessor::consumeDebugText()
+{
+    // Atomically check-and-clear the dirty flag; if it was set, return a copy
+    // of the last debug text. This keeps the editor from accessing private
+    // members directly while avoiding heavy synchronization for a debug HUD.
+    if (debugDirty.exchange(false))
+        return debugText;
+    return {};
+}
+
 PitchShiftPluginAudioProcessor::PitchShiftPluginAudioProcessor()
 : AudioProcessor(BusesProperties()
         .withInput("Input", juce::AudioChannelSet::stereo(), true)

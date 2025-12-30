@@ -7,6 +7,8 @@ class PitchShiftPluginAudioProcessor : public juce::AudioProcessor
 public:
     // debug HUD support (updated from audio thread once-per-block)
     void setDebugText(const juce::String& s);
+    // Consume and clear the debug text (returns empty string if none).
+    juce::String consumeDebugText();
 
     PitchShiftPluginAudioProcessor();
     ~PitchShiftPluginAudioProcessor() override;
