@@ -2,6 +2,7 @@
 #include "PluginEditor.h"
 #include <complex>
 #include <cstring>
+#include <atomic>
 
 juce::AudioProcessorValueTreeState::ParameterLayout PitchShiftPluginAudioProcessor::createParameterLayout()
 {
@@ -37,6 +38,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout PitchShiftPluginAudioProcess
             NormalisableRange<float>(0.0f, 1.0f, 0.01f),
             1.0f)
     };
+}
+
+void PitchShiftPluginAudioProcessor::setDebugText(const juce::String& s)
+{
+    debugText = s;
+    debugDirty.store(true);
 }
 
 PitchShiftPluginAudioProcessor::PitchShiftPluginAudioProcessor()
@@ -140,6 +147,18 @@ void PitchShiftPluginAudioProcessor::processBlock(
             width = param->load();
 
         const int numSamples = buffer.getNumSamples();
+
+        // update debug HUD once per block
+        if (numSamples > 0)
+        {
+            setDebugText(
+                "procOut=" + juce::String(procOutL.size()) +
+                " fftWrite=" + juce::String(fftWritePos) +
+                " primed=" + juce::String(fftPrimed) +
+                " crossfade=" + juce::String(crossfadeSamplesRemaining) +
+                " OLA0=" + juce::String(olaL.empty() ? 0.0f : olaL[0])
+            );
+        }
 
         // read pitch/formant/smooth params once per block (avoid per-sample jumps)
         float pitchSemitones = 0.0f;

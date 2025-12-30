@@ -4,7 +4,8 @@
 class PitchShiftPluginAudioProcessor;
 
 class PitchShiftPluginAudioProcessorEditor
-    : public juce::AudioProcessorEditor
+    : public juce::AudioProcessorEditor,
+      private juce::Timer
 {
 public:
     explicit PitchShiftPluginAudioProcessorEditor(
@@ -32,6 +33,10 @@ private:
     std::unique_ptr<Attachment> pitchAttachment;
     std::unique_ptr<Attachment> formantAttachment;
     std::unique_ptr<Attachment> smoothGrainsAttachment;
+    // on-screen debug HUD
+    juce::Label debugLabel;
+
+    void timerCallback() override;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(
         PitchShiftPluginAudioProcessorEditor)

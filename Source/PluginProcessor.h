@@ -5,6 +5,9 @@
 class PitchShiftPluginAudioProcessor : public juce::AudioProcessor
 {
 public:
+    // debug HUD support (updated from audio thread once-per-block)
+    void setDebugText(const juce::String& s);
+
     PitchShiftPluginAudioProcessor();
     ~PitchShiftPluginAudioProcessor() override;
 
@@ -92,6 +95,9 @@ private:
     // overlap-add persistent buffer for streaming FFT output
     std::vector<float> olaL;
     std::vector<float> olaR;
+    // Debug HUD text (updated from audio thread) and dirty flag
+    juce::String debugText;
+    std::atomic<bool> debugDirty { false };
     // FFT output priming / crossfade state
     bool fftPrimed = false;
     int crossfadeSamplesRemaining = 0;

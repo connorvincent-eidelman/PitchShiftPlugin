@@ -73,6 +73,12 @@ PitchShiftPluginAudioProcessorEditor(
     smoothGrainsLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     smoothGrainsLabel.setFont(juce::Font(10.0f));
     addAndMakeVisible(smoothGrainsLabel);
+
+    // debug HUD
+    debugLabel.setColour(juce::Label::textColourId, juce::Colours::lime);
+    debugLabel.setJustificationType(juce::Justification::topLeft);
+    addAndMakeVisible(debugLabel);
+    startTimerHz(30); // 30 Hz HUD refresh
 }
 
 PitchShiftPluginAudioProcessorEditor::
@@ -127,4 +133,11 @@ void PitchShiftPluginAudioProcessorEditor::resized() {
     auto smoothArea = juce::Rectangle<int>((k10.getCentreX() + k11.getCentreX())/2 - 80, k10.getBottom() - 36, 160, 16);
     smoothGrainsSlider.setBounds(smoothArea);
     smoothGrainsLabel.setBounds(smoothArea.withY(smoothArea.getY() - 14).withHeight(12));
+    debugLabel.setBounds(10, 10, getWidth() - 20, 100);
+}
+
+void PitchShiftPluginAudioProcessorEditor::timerCallback()
+{
+    if (audioProcessor.debugDirty.exchange(false))
+        debugLabel.setText(audioProcessor.debugText, juce::dontSendNotification);
 }
