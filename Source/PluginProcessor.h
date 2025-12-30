@@ -79,6 +79,9 @@ private:
     std::vector<float> synPhaseL;
     std::vector<float> synPhaseR;
     bool formantInitialized = false;
+    // previous-frame magnitudes for transient detection
+    std::vector<float> prevMagL;
+    std::vector<float> prevMagR;
     // --- Formant smoothing & safety
     float lastFormantRatio = 1.0f;
     juce::SmoothedValue<float> smoothedFormantRatio;
@@ -86,4 +89,11 @@ private:
     std::vector<float> dryDelayL;
     std::vector<float> dryDelayR;
     int dryDelayPos = 0;
+    // overlap-add persistent buffer for streaming FFT output
+    std::vector<float> olaL;
+    std::vector<float> olaR;
+    // FFT output priming / crossfade state
+    bool fftPrimed = false;
+    int crossfadeSamplesRemaining = 0;
+    int crossfadeLength = 0;
 };

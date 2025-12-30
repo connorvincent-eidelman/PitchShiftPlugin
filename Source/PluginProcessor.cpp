@@ -1,6 +1,7 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
 #include <complex>
+#include <cstring>
 
 juce::AudioProcessorValueTreeState::ParameterLayout PitchShiftPluginAudioProcessor::createParameterLayout()
 {
@@ -92,17 +93,26 @@ void PitchShiftPluginAudioProcessor::prepareToPlay(double sampleRate, int /*samp
     prevPhaseR.assign(half + 1, 0.0f);
     synPhaseL.assign(half + 1, 0.0f);
     synPhaseR.assign(half + 1, 0.0f);
+    prevMagL.assign(half + 1, 0.0f);
+    prevMagR.assign(half + 1, 0.0f);
     formantInitialized = false;
     // prepare dry delay to match FFT latency
     dryDelayL.assign(fftSize, 0.0f);
     dryDelayR.assign(fftSize, 0.0f);
     dryDelayPos = 0;
-    setLatencySamples(fftSize);
+    // prepare persistent overlap-add buffers
+    olaL.assign(fftSize, 0.0f);
+    olaR.assign(fftSize, 0.0f);
+    setLatencySamples(fftSize - fftHop);
 
     // initialize formant smoothing state
     smoothedFormantRatio.reset(sampleRate, 0.05); // 50 ms smoothing
     smoothedFormantRatio.setCurrentAndTargetValue(1.0f);
     lastFormantRatio = 1.0f;
+    // initialize FFT priming/crossfade
+    fftPrimed = false;
+    crossfadeSamplesRemaining = 0;
+    crossfadeLength = fftHop; // crossfade over one hop
 }
 
 void PitchShiftPluginAudioProcessor::releaseResources() {}
@@ -305,68 +315,140 @@ void PitchShiftPluginAudioProcessor::processBlock(
                     prevPhaseR[k] = phR[k];
                 }
 
-                // warp magnitudes by formantRatio (scale frequency axis)
-                std::vector<float> newMagL(half+1), newMagR(half+1);
+                // --- Peak-based formant shifting with collision resolution and transient bypass
+                std::vector<float> newMagL(half+1, 0.0f), newMagR(half+1, 0.0f);
+                std::vector<float> magAccumL(half+1, 0.0f), magAccumR(half+1, 0.0f);
+                std::vector<float> weightAccumL(half+1, 0.0f), weightAccumR(half+1, 0.0f);
+                std::vector<float> instFreqAccumL(half+1, 0.0f), instFreqAccumR(half+1, 0.0f);
+                std::vector<float> mappedInstFreqL(half+1, 0.0f), mappedInstFreqR(half+1, 0.0f);
+
+                // compute a simple global threshold and spectral flux for transient detection
+                float avgMagL = 0.0f, avgMagR = 0.0f;
+                for (int k = 0; k <= half; ++k) { avgMagL += magL[k]; avgMagR += magR[k]; }
+                avgMagL /= (float)(half + 1);
+                avgMagR /= (float)(half + 1);
+                const float peakThreshFactor = 0.08f; // relative to average
+                float threshL = avgMagL * peakThreshFactor;
+                float threshR = avgMagR * peakThreshFactor;
+
+                float spectralFluxL = 0.0f, spectralFluxR = 0.0f;
                 for (int k = 0; k <= half; ++k)
                 {
-                    float src = (float)k / formantRatio;
-                    if (src <= 0.0f)
+                    spectralFluxL += std::max(0.0f, magL[k] - prevMagL[k]);
+                    spectralFluxR += std::max(0.0f, magR[k] - prevMagR[k]);
+                }
+                float fluxNormL = spectralFluxL / (avgMagL * (float)(half + 1) + 1e-9f);
+                float fluxNormR = spectralFluxR / (avgMagR * (float)(half + 1) + 1e-9f);
+                const float fluxBypassThreshold = 0.20f; // tuned: bypass if flux ratio is high
+
+                // If transient detected, bypass formant-shifting for this frame (copy mags)
+                if (fluxNormL > fluxBypassThreshold || fluxNormR > fluxBypassThreshold)
+                {
+                    for (int k = 0; k <= half; ++k)
                     {
-                        newMagL[k] = magL[0];
-                        newMagR[k] = magR[0];
-                    }
-                    else if (src >= half)
-                    {
-                        newMagL[k] = magL[half];
-                        newMagR[k] = magR[half];
-                    }
-                    else
-                    {
-                        int i0 = (int)std::floor(src);
-                        int i1 = i0 + 1;
-                        float frac = src - (float)i0;
-                        newMagL[k] = magL[i0] * (1.0f - frac) + magL[i1] * frac;
-                        newMagR[k] = magR[i0] * (1.0f - frac) + magR[i1] * frac;
-                    }
-                    // gentle spectral smoothing to reduce zipper/grain noise
-                    const float magSmooth = 0.85f;
-                    if (k > 0 && k < half)
-                    {
-                        newMagL[k] = magSmooth * newMagL[k] + (1.0f - magSmooth) * magL[k];
-                        newMagR[k] = magSmooth * newMagR[k] + (1.0f - magSmooth) * magR[k];
+                        newMagL[k] = magL[k];
+                        newMagR[k] = magR[k];
+                        mappedInstFreqL[k] = instFreqL[k];
+                        mappedInstFreqR[k] = instFreqR[k];
                     }
                 }
+                else
+                {
+                    // detect local peaks
+                    std::vector<int> peaksL, peaksR;
+                    for (int k = 1; k < half; ++k)
+                    {
+                        if (magL[k] > magL[k-1] && magL[k] >= magL[k+1] && magL[k] > threshL)
+                            peaksL.push_back(k);
+                        if (magR[k] > magR[k-1] && magR[k] >= magR[k+1] && magR[k] > threshR)
+                            peaksR.push_back(k);
+                    }
 
-                // rebuild complex spectrum using interpolated instantaneous frequency -> accumulate synthesis phase
+                    // peak half-width in bins (small region around a peak)
+                    const int peakHalfWidth = juce::jlimit(1, 8, fftSize / 256);
+
+                    // accumulate weighted magnitudes and instFreqs into destination bins
+                    for (int pk : peaksL)
+                    {
+                        int dstCenter = juce::jlimit(0, half, (int)std::lround(pk * formantRatio));
+                        for (int off = -peakHalfWidth; off <= peakHalfWidth; ++off)
+                        {
+                            int srcIdx = pk + off;
+                            int dstIdx = dstCenter + off;
+                            if (srcIdx < 0 || srcIdx > half || dstIdx < 0 || dstIdx > half) continue;
+                            float weight = 1.0f - (std::abs(off) / (float)(peakHalfWidth + 1));
+                            magAccumL[dstIdx] += magL[srcIdx] * weight;
+                            weightAccumL[dstIdx] += weight;
+                            instFreqAccumL[dstIdx] += instFreqL[srcIdx] * weight;
+                        }
+                    }
+
+                    for (int pk : peaksR)
+                    {
+                        int dstCenter = juce::jlimit(0, half, (int)std::lround(pk * formantRatio));
+                        for (int off = -peakHalfWidth; off <= peakHalfWidth; ++off)
+                        {
+                            int srcIdx = pk + off;
+                            int dstIdx = dstCenter + off;
+                            if (srcIdx < 0 || srcIdx > half || dstIdx < 0 || dstIdx > half) continue;
+                            float weight = 1.0f - (std::abs(off) / (float)(peakHalfWidth + 1));
+                            magAccumR[dstIdx] += magR[srcIdx] * weight;
+                            weightAccumR[dstIdx] += weight;
+                            instFreqAccumR[dstIdx] += instFreqR[srcIdx] * weight;
+                        }
+                    }
+
+                    // finalize new magnitude and mapped instantaneous frequency per bin
+                    const float backgroundMix = 0.18f;
+                    for (int k = 0; k <= half; ++k)
+                    {
+                        if (weightAccumL[k] > 0.0f)
+                        {
+                            newMagL[k] = magAccumL[k] / weightAccumL[k];
+                            mappedInstFreqL[k] = instFreqAccumL[k] / weightAccumL[k];
+                        }
+                        else
+                        {
+                            newMagL[k] = 0.0f;
+                            mappedInstFreqL[k] = instFreqL[k];
+                        }
+                        newMagL[k] += backgroundMix * magL[k];
+
+                        if (weightAccumR[k] > 0.0f)
+                        {
+                            newMagR[k] = magAccumR[k] / weightAccumR[k];
+                            mappedInstFreqR[k] = instFreqAccumR[k] / weightAccumR[k];
+                        }
+                        else
+                        {
+                            newMagR[k] = 0.0f;
+                            mappedInstFreqR[k] = instFreqR[k];
+                        }
+                        newMagR[k] += backgroundMix * magR[k];
+                    }
+
+                    // gentle normalization to avoid level jumps
+                    float maxOld = 0.0001f, maxNew = 0.0001f;
+                    for (int k = 0; k <= half; ++k) { maxOld = std::max(maxOld, magL[k]); maxNew = std::max(maxNew, newMagL[k]); }
+                    float normL = maxOld / (maxNew + 1e-9f);
+                    for (int k = 0; k <= half; ++k) newMagL[k] *= normL;
+                    maxOld = 0.0001f; maxNew = 0.0001f;
+                    for (int k = 0; k <= half; ++k) { maxOld = std::max(maxOld, magR[k]); maxNew = std::max(maxNew, newMagR[k]); }
+                    float normR = maxOld / (maxNew + 1e-9f);
+                    for (int k = 0; k <= half; ++k) newMagR[k] *= normR;
+                }
+
+                // Advance synthesis phase ONCE per bin using mapped instantaneous freq
+                for (int k = 0; k <= half; ++k)
+                {
+                    synPhaseL[k] += mappedInstFreqL[k] * (float)fftHop;
+                    synPhaseR[k] += mappedInstFreqR[k] * (float)fftHop;
+                }
+
+                // rebuild complex spectrum from newMag and synPhase
                 std::vector<std::complex<float>> outDataL(fftSize), outDataR(fftSize);
                 for (int k = 0; k <= half; ++k)
                 {
-                    // interpolate instantaneous frequency from source position
-                    float src = (float)k / formantRatio;
-                    float instL = 0.0f, instR = 0.0f;
-                    if (src <= 0.0f)
-                    {
-                        instL = instFreqL[0];
-                        instR = instFreqR[0];
-                    }
-                    else if (src >= half)
-                    {
-                        instL = instFreqL[half];
-                        instR = instFreqR[half];
-                    }
-                    else
-                    {
-                        int i0 = (int)std::floor(src);
-                        int i1 = i0 + 1;
-                        float frac = src - (float)i0;
-                        instL = instFreqL[i0] * (1.0f - frac) + instFreqL[i1] * frac;
-                        instR = instFreqR[i0] * (1.0f - frac) + instFreqR[i1] * frac;
-                    }
-
-                    // accumulate synthesis phase (synPhase stored across frames)
-                    synPhaseL[k] += instL * (float)fftHop;
-                    synPhaseR[k] += instR * (float)fftHop;
-
                     float mL = newMagL[k];
                     float pL = synPhaseL[k];
                     outDataL[k] = std::complex<float>(mL * std::cos(pL), mL * std::sin(pL));
@@ -400,11 +482,29 @@ void PitchShiftPluginAudioProcessor::processBlock(
                 window.multiplyWithWindowingTable(tempOutR.data(), (size_t)fftSize);
                 // apply overlap-add compensation gain for Hann with 4x overlap
                 const float olaGain = 1.0f / 1.5f; // ~0.6667
+
+                // overlap-add into persistent OLA buffers
                 for (int n = 0; n < fftSize; ++n)
                 {
-                    procOutL.push_back(tempOutL[n] * olaGain);
-                    procOutR.push_back(tempOutR[n] * olaGain);
+                    olaL[n] += tempOutL[n] * olaGain;
+                    olaR[n] += tempOutR[n] * olaGain;
                 }
+
+                // output only fftHop samples from the OLA buffer
+                for (int n = 0; n < fftHop; ++n)
+                {
+                    procOutL.push_back(olaL[n]);
+                    procOutR.push_back(olaR[n]);
+                }
+
+                // shift OLA buffers left by hop (use memmove for efficiency)
+                int tail = fftSize - fftHop;
+                std::memmove(olaL.data(), olaL.data() + fftHop, (size_t)tail * sizeof(float));
+                std::memmove(olaR.data(), olaR.data() + fftHop, (size_t)tail * sizeof(float));
+
+                // clear tail
+                std::fill(olaL.begin() + tail, olaL.end(), 0.0f);
+                std::fill(olaR.begin() + tail, olaR.end(), 0.0f);
 
                 // shift fftBuffer left by hop
                 int shift = fftHop;
@@ -420,6 +520,12 @@ void PitchShiftPluginAudioProcessor::processBlock(
                     fftBufferR[n] = 0.0f;
                 }
                 fftWritePos = fftSize - shift;
+                // store current mags for next-frame flux detection
+                for (int k = 0; k <= half; ++k)
+                {
+                    prevMagL[k] = magL[k];
+                    prevMagR[k] = magR[k];
+                }
                 }
             }
 
@@ -442,24 +548,37 @@ void PitchShiftPluginAudioProcessor::processBlock(
             dryDelayPos++;
             if (dryDelayPos >= fftSize) dryDelayPos = 0;
 
-            bool processingActive = (effectiveSmear > 0.001f) || (std::abs(pitchSemitones) > 1e-6f) || (std::abs(formantSemitones) > 1e-6f);
-            if (!procOutL.empty() || !procOutR.empty())
+            // New policy: always output FFT stream. Pre-fill silence until FFT is primed,
+            // then crossfade from delayed dry into FFT output once primed to avoid ducking.
+            bool fftPrimedNow = (procOutL.size() >= (size_t)fftHop);
+            if (!fftPrimedNow)
             {
-                // if there is FFT output, use it
-                procL = outFFT_L;
-                procR = outFFT_R;
-            }
-            else if (processingActive)
-            {
-                // when processing is active but FFT hasn't produced output yet, use aligned delayed dry
-                procL = delayedDryL;
-                procR = delayedDryR;
+                // not yet primed: output silence (pre-fill) to avoid mixing dry bursts
+                procL = 0.0f;
+                procR = 0.0f;
             }
             else
             {
-                // processing inactive: use immediate dry to avoid latency/gaps
-                procL = inL;
-                procR = inR;
+                // just transitioned to primed -> start crossfade
+                if (!fftPrimed && fftPrimedNow)
+                {
+                    crossfadeSamplesRemaining = crossfadeLength > 0 ? crossfadeLength : fftHop;
+                    fftPrimed = true;
+                }
+
+                if (crossfadeSamplesRemaining > 0)
+                {
+                    // alpha grows from 0->1 over crossfadeLength
+                    float alpha = 1.0f - (float)crossfadeSamplesRemaining / (float)juce::jmax(1, crossfadeLength);
+                    procL = delayedDryL * (1.0f - alpha) + outFFT_L * alpha;
+                    procR = delayedDryR * (1.0f - alpha) + outFFT_R * alpha;
+                    crossfadeSamplesRemaining--;
+                }
+                else
+                {
+                    procL = outFFT_L;
+                    procR = outFFT_R;
+                }
             }
 
             // apply stereo width to processed signal (mid/side)
