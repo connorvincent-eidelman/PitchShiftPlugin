@@ -611,9 +611,9 @@ void PitchShiftPluginAudioProcessor::processBlock(
             bool fftPrimedNow = (procOutL.size() >= (size_t)fftHop);
             if (!fftPrimedNow)
             {
-                // not yet primed: output silence (pre-fill) to avoid mixing dry bursts
-                procL = 0.0f;
-                procR = 0.0f;
+                // not yet primed: output delayed dry so the plugin doesn't silence the host
+                procL = delayedDryL;
+                procR = delayedDryR;
             }
             else
             {

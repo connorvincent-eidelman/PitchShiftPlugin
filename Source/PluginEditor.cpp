@@ -21,6 +21,7 @@ PitchShiftPluginAudioProcessorEditor(
     stereoLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     stereoLabel.setFont(juce::Font(12.0f, juce::Font::bold));
     addAndMakeVisible(stereoLabel);
+    stereoLabel.setInterceptsMouseClicks(false, false);
     
     smearSlider.setSliderStyle(juce::Slider::Rotary);
     smearSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);
@@ -34,6 +35,7 @@ PitchShiftPluginAudioProcessorEditor(
     smearLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     smearLabel.setFont(juce::Font(12.0f, juce::Font::bold));
     addAndMakeVisible(smearLabel);
+    smearLabel.setInterceptsMouseClicks(false, false);
     
     // Pitch slider
     pitchSlider.setSliderStyle(juce::Slider::Rotary);
@@ -47,6 +49,7 @@ PitchShiftPluginAudioProcessorEditor(
     pitchLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     pitchLabel.setFont(juce::Font(12.0f, juce::Font::bold));
     addAndMakeVisible(pitchLabel);
+    pitchLabel.setInterceptsMouseClicks(false, false);
 
     // Formant slider
     formantSlider.setSliderStyle(juce::Slider::Rotary);
@@ -60,6 +63,7 @@ PitchShiftPluginAudioProcessorEditor(
     formantLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     formantLabel.setFont(juce::Font(12.0f, juce::Font::bold));
     addAndMakeVisible(formantLabel);
+    formantLabel.setInterceptsMouseClicks(false, false);
 
     // Overdrive Drive knob
     overdriveDriveSlider.setSliderStyle(juce::Slider::Rotary);
@@ -74,6 +78,7 @@ PitchShiftPluginAudioProcessorEditor(
     overdriveDriveLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     overdriveDriveLabel.setFont(juce::Font(12.0f, juce::Font::bold));
     addAndMakeVisible(overdriveDriveLabel);
+    overdriveDriveLabel.setInterceptsMouseClicks(false, false);
 
     // Overdrive Mix knob
     overdriveMixSlider.setSliderStyle(juce::Slider::Rotary);
@@ -88,6 +93,7 @@ PitchShiftPluginAudioProcessorEditor(
     overdriveMixLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     overdriveMixLabel.setFont(juce::Font(12.0f, juce::Font::bold));
     addAndMakeVisible(overdriveMixLabel);
+    overdriveMixLabel.setInterceptsMouseClicks(false, false);
 
     // Overdrive Stacks slider (horizontal integer slider)
     overdriveStacksSlider.setSliderStyle(juce::Slider::LinearHorizontal);
@@ -103,6 +109,7 @@ PitchShiftPluginAudioProcessorEditor(
     overdriveStacksLabel.setColour(juce::Label::textColourId, juce::Colours::white);
     overdriveStacksLabel.setFont(juce::Font(10.0f));
     addAndMakeVisible(overdriveStacksLabel);
+    overdriveStacksLabel.setInterceptsMouseClicks(false, false);
 
     // Smooth Grains micro-slider (between Pitch and Formant)
     smoothGrainsSlider.setSliderStyle(juce::Slider::LinearHorizontal);
