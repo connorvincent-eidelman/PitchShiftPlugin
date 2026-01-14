@@ -3,6 +3,7 @@
 #include <complex>
 #include <cstring>
 #include <atomic>
+#include <cmath>
 
 juce::AudioProcessorValueTreeState::ParameterLayout PitchShiftPluginAudioProcessor::createParameterLayout()
 {
@@ -37,6 +38,24 @@ juce::AudioProcessorValueTreeState::ParameterLayout PitchShiftPluginAudioProcess
             "Smooth Grains",
             NormalisableRange<float>(0.0f, 1.0f, 0.01f),
             1.0f)
+        ,
+        // Overdrive parameters: drive (gain), mix (dry/wet), stacks (integer repeat count)
+        std::make_unique<AudioParameterFloat>(
+            "overdriveDrive",
+            "Overdrive Drive",
+            NormalisableRange<float>(0.0f, 30.0f, 0.01f),
+            1.0f),
+        std::make_unique<AudioParameterFloat>(
+            "overdriveMix",
+            "Overdrive Mix",
+            NormalisableRange<float>(0.0f, 1.0f, 0.01f),
+            0.5f),
+        std::make_unique<AudioParameterInt>(
+            "overdriveStacks",
+            "Overdrive Stacks",
+            0,
+            32,
+            0)
     };
 }
 
@@ -177,6 +196,16 @@ void PitchShiftPluginAudioProcessor::processBlock(
         float smoothGrains = 1.0f;
         if (auto sp = apvts.getRawParameterValue("smoothGrains"))
             smoothGrains = sp->load();
+        // overdrive params
+        float overdriveDrive = 1.0f;
+        if (auto od = apvts.getRawParameterValue("overdriveDrive"))
+            overdriveDrive = od->load();
+        float overdriveMix = 0.5f;
+        if (auto om = apvts.getRawParameterValue("overdriveMix"))
+            overdriveMix = om->load();
+        int overdriveStacks = 0;
+        if (auto os = apvts.getRawParameterValue("overdriveStacks"))
+            overdriveStacks = (int)std::lround(os->load());
         // compute target formant ratio from semitones, clamp and smooth it
         float formantSemitones = 0.0f;
         if (auto fp = apvts.getRawParameterValue("formant"))
@@ -608,6 +637,30 @@ void PitchShiftPluginAudioProcessor::processBlock(
                     procL = outFFT_L;
                     procR = outFFT_R;
                 }
+            }
+
+            // apply stacked overdrive (if enabled) before stereo width
+            if (overdriveMix > 0.0001f && overdriveStacks > 0)
+            {
+                float dryL = procL;
+                float dryR = procR;
+                float drivenL = procL;
+                float drivenR = procR;
+                // simple stacked soft-clip: multiply by gain, tanh, repeat
+                // map overdriveDrive to a sensible per-stage gain
+                float perStageGain = 1.0f + overdriveDrive * 0.08f; // tuned mapping
+                for (int s = 0; s < overdriveStacks; ++s)
+                {
+                    drivenL *= perStageGain;
+                    drivenR *= perStageGain;
+                    drivenL = std::tanh(drivenL);
+                    drivenR = std::tanh(drivenR);
+                    // small soft-knee post-scale to avoid runaway
+                    drivenL *= 0.95f;
+                    drivenR *= 0.95f;
+                }
+                procL = dryL * (1.0f - overdriveMix) + drivenL * overdriveMix;
+                procR = dryR * (1.0f - overdriveMix) + drivenR * overdriveMix;
             }
 
             // apply stereo width to processed signal (mid/side)
