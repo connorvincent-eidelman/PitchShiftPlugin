@@ -127,6 +127,7 @@ PitchShiftPluginAudioProcessorEditor(
     // debug HUD
     debugLabel.setColour(juce::Label::textColourId, juce::Colours::lime);
     debugLabel.setJustificationType(juce::Justification::topLeft);
+    debugLabel.setFont(juce::Font(10.0f));
     addAndMakeVisible(debugLabel);
     startTimerHz(30); // 30 Hz HUD refresh
 }
