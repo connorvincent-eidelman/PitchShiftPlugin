@@ -7,7 +7,7 @@ PitchShiftPluginAudioProcessorEditor(
     : AudioProcessorEditor(&p),
       audioProcessor(p)
 {
-    setSize(600, 320);
+    setSize(800, 400);
 
     stereoWidthSlider.setSliderStyle(juce::Slider::Rotary);
     stereoWidthSlider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 60, 20);
@@ -151,7 +151,7 @@ void PitchShiftPluginAudioProcessorEditor::paint(
 }
 
 void PitchShiftPluginAudioProcessorEditor::resized() {
-    auto area = getLocalBounds().reduced(24);
+    auto area = getLocalBounds().reduced(40);
     auto leftArea = area.removeFromLeft(area.getWidth() / 2);
     // arrange 3x2 grid so we can add Drive and Mix knobs
     auto areaW = area.getWidth();
@@ -159,7 +159,7 @@ void PitchShiftPluginAudioProcessorEditor::resized() {
     int cols = 3;
     int rows = 2;
     int cellW = areaW / cols;
-    int cellH = (areaH * 7) / 10 / rows; // reserve bottom area for stacks slider
+    int cellH = (areaH * 8) / 10 / rows; // reserve bottom area for stacks slider
 
     juce::Rectangle<int> r00(area.getX(), area.getY(), cellW, cellH);
     juce::Rectangle<int> r01(area.getX() + cellW, area.getY(), cellW, cellH);
@@ -168,7 +168,7 @@ void PitchShiftPluginAudioProcessorEditor::resized() {
     juce::Rectangle<int> r11(area.getX() + cellW, area.getY() + cellH, cellW, cellH);
     juce::Rectangle<int> r12(area.getX() + 2 * cellW, area.getY() + cellH, cellW, cellH);
 
-    auto knobPad = 8;
+    auto knobPad = 15;
     auto k00 = r00.reduced(knobPad);
     auto k01 = r01.reduced(knobPad);
     auto k02 = r02.reduced(knobPad);
@@ -185,7 +185,7 @@ void PitchShiftPluginAudioProcessorEditor::resized() {
     formantSlider.setBounds(k11);
     overdriveMixSlider.setBounds(k12);
 
-    int labelH = 18;
+    int labelH = 20;
     stereoLabel.setBounds(k00.withY(std::max(0, k00.getY() - labelH)).withHeight(labelH));
     smearLabel.setBounds(k01.withY(std::max(0, k01.getY() - labelH)).withHeight(labelH));
     overdriveDriveLabel.setBounds(k02.withY(std::max(0, k02.getY() - labelH)).withHeight(labelH));
@@ -194,14 +194,14 @@ void PitchShiftPluginAudioProcessorEditor::resized() {
     overdriveMixLabel.setBounds(k12.withY(std::max(0, k12.getY() - labelH)).withHeight(labelH));
 
     // position Smooth Grains slider between bottom-left and bottom-center knobs
-    auto smoothArea = juce::Rectangle<int>((k10.getCentreX() + k11.getCentreX())/2 - 80, k10.getBottom() - 36, 160, 16);
+    auto smoothArea = juce::Rectangle<int>((k10.getCentreX() + k11.getCentreX())/2 - 100, k10.getBottom() - 40, 200, 20);
     smoothGrainsSlider.setBounds(smoothArea);
-    smoothGrainsLabel.setBounds(smoothArea.withY(smoothArea.getY() - 14).withHeight(12));
+    smoothGrainsLabel.setBounds(smoothArea.withY(smoothArea.getY() - 16).withHeight(14));
 
     // stacks slider across bottom area
-    auto stacksArea = juce::Rectangle<int>(area.getX() + 40, area.getBottom() - 48, areaW - 80, 20);
+    auto stacksArea = juce::Rectangle<int>(area.getX() + 50, area.getBottom() - 50, areaW - 100, 24);
     overdriveStacksSlider.setBounds(stacksArea);
-    overdriveStacksLabel.setBounds(stacksArea.withY(stacksArea.getY() - 14).withHeight(12));
+    overdriveStacksLabel.setBounds(stacksArea.withY(stacksArea.getY() - 16).withHeight(14));
 
     debugLabel.setBounds(10, 10, getWidth() - 20, 100);
 }
