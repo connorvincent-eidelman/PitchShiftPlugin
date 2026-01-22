@@ -208,7 +208,8 @@ void PitchShiftPluginAudioProcessorEditor::resized() {
 
 void PitchShiftPluginAudioProcessorEditor::timerCallback()
 {
-    auto text = audioProcessor.consumeDebugText();
-    if (!text.isEmpty())
-        debugLabel.setText(text, juce::dontSendNotification);
+    debugLabel.setText(
+        "FFT queued: " + juce::String(audioProcessor.debugProcOutSize.load()),
+        juce::dontSendNotification
+    );
 }

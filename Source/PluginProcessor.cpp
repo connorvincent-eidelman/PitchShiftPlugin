@@ -59,22 +59,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout PitchShiftPluginAudioProcess
     };
 }
 
-void PitchShiftPluginAudioProcessor::setDebugText(const juce::String& s)
-{
-    debugText = s;
-    debugDirty.store(true);
-}
-
-juce::String PitchShiftPluginAudioProcessor::consumeDebugText()
-{
-    // Atomically check-and-clear the dirty flag; if it was set, return a copy
-    // of the last debug text. This keeps the editor from accessing private
-    // members directly while avoiding heavy synchronization for a debug HUD.
-    if (debugDirty.exchange(false))
-        return debugText;
-    return {};
-}
-
 PitchShiftPluginAudioProcessor::PitchShiftPluginAudioProcessor()
 : AudioProcessor(BusesProperties()
         .withInput("Input", juce::AudioChannelSet::stereo(), true)
@@ -121,10 +105,36 @@ void PitchShiftPluginAudioProcessor::prepareToPlay(double sampleRate, int /*samp
     fftBufferL.assign(fftSize, 0.0f);
     fftBufferR.assign(fftSize, 0.0f);
     fftWritePos = 0;
-    procOutL.clear();
-    procOutR.clear();
-    // initialize phase-vocoder state arrays for half-spectrum
+    // ================= FFT PRE-ALLOCATION =================
+    outDataL.resize(fftSize);
+    outDataR.resize(fftSize);
+    tempInL.resize(fftSize);
+    tempInR.resize(fftSize);
     int half = fftSize / 2;
+    magL.resize(half + 1);
+    magR.resize(half + 1);
+    phL.resize(half + 1);
+    phR.resize(half + 1);
+    instFreqL.resize(half + 1);
+    instFreqR.resize(half + 1);
+    newMagL.resize(half + 1);
+    newMagR.resize(half + 1);
+    mappedInstFreqL.resize(half + 1);
+    mappedInstFreqR.resize(half + 1);
+    tempOutL.resize(fftSize);
+    tempOutR.resize(fftSize);
+    magAccumL.resize(half + 1);
+    magAccumR.resize(half + 1);
+    weightAccumL.resize(half + 1);
+    weightAccumR.resize(half + 1);
+    instFreqAccumL.resize(half + 1);
+    instFreqAccumR.resize(half + 1);
+    peaksL.resize(half + 1);
+    peaksR.resize(half + 1);
+    // FFT output ring buffer
+    fftOutBuffer.setSize(2, fftOutFifo.getTotalSize());
+    fftOutBuffer.clear();
+    // initialize phase-vocoder state arrays for half-spectrum
     prevPhaseL.assign(half + 1, 0.0f);
     prevPhaseR.assign(half + 1, 0.0f);
     synPhaseL.assign(half + 1, 0.0f);
@@ -180,13 +190,7 @@ void PitchShiftPluginAudioProcessor::processBlock(
         // update debug HUD once per block
         if (numSamples > 0)
         {
-            setDebugText(
-                "procOut=" + juce::String((int)procOutL.size()) +
-                " fftWrite=" + juce::String(fftWritePos) +
-                " primed=" + juce::String(fftPrimed ? 1 : 0) +
-                " crossfade=" + juce::String(crossfadeSamplesRemaining) +
-                " OLA0=" + juce::String(olaL.empty() ? 0.0f : olaL[0])
-            );
+            debugProcOutSize.store(fftOutFifo.getNumReady());
         }
 
         // read pitch/formant/smooth params once per block (avoid per-sample jumps)
@@ -305,21 +309,23 @@ void PitchShiftPluginAudioProcessor::processBlock(
                 if (fftWritePos >= fftSize)
                 {
                     // prepare complex arrays (use std::complex to match FFT Complex type)
-                    std::vector<std::complex<float>> dataL(fftSize), dataR(fftSize);
+                    auto& dataL = outDataL;
+                    auto& dataR = outDataR;
 
                 // apply analysis window and fill complex arrays
-                std::vector<float> tempInL(fftSize), tempInR(fftSize);
+                auto& tempInL_ref = tempInL;
+                auto& tempInR_ref = tempInR;
                 for (int n = 0; n < fftSize; ++n)
                 {
-                    tempInL[n] = fftBufferL[n];
-                    tempInR[n] = fftBufferR[n];
+                    tempInL_ref[n] = fftBufferL[n];
+                    tempInR_ref[n] = fftBufferR[n];
                 }
-                window.multiplyWithWindowingTable(tempInL.data(), (size_t)fftSize);
-                window.multiplyWithWindowingTable(tempInR.data(), (size_t)fftSize);
+                window.multiplyWithWindowingTable(tempInL_ref.data(), (size_t)fftSize);
+                window.multiplyWithWindowingTable(tempInR_ref.data(), (size_t)fftSize);
                 for (int n = 0; n < fftSize; ++n)
                 {
-                    dataL[n] = std::complex<float>(tempInL[n], 0.0f);
-                    dataR[n] = std::complex<float>(tempInR[n], 0.0f);
+                    dataL[n] = std::complex<float>(tempInL_ref[n], 0.0f);
+                    dataR[n] = std::complex<float>(tempInR_ref[n], 0.0f);
                 }
 
                 fft.perform(reinterpret_cast<juce::dsp::Complex<float>*>(dataL.data()),
@@ -329,60 +335,77 @@ void PitchShiftPluginAudioProcessor::processBlock(
 
                 int half = fftSize / 2;
                 // extract mag/phase
-                std::vector<float> magL(half+1), magR(half+1), phL(half+1), phR(half+1);
+                auto& magL_ref = magL;
+                auto& magR_ref = magR;
+                auto& phL_ref = phL;
+                auto& phR_ref = phR;
                 for (int k = 0; k <= half; ++k)
                 {
                     float re = dataL[k].real();
                     float im = dataL[k].imag();
-                    magL[k] = std::sqrt(re*re + im*im);
-                    phL[k] = std::atan2(im, re);
+                    magL_ref[k] = std::sqrt(re*re + im*im);
+                    phL_ref[k] = std::atan2(im, re);
 
                     re = dataR[k].real();
                     im = dataR[k].imag();
-                    magR[k] = std::sqrt(re*re + im*im);
-                    phR[k] = std::atan2(im, re);
+                    magR_ref[k] = std::sqrt(re*re + im*im);
+                    phR_ref[k] = std::atan2(im, re);
                 }
 
                 // --- Phase-vocoder: compute instantaneous frequency per analysis bin
-                std::vector<float> instFreqL(half+1), instFreqR(half+1);
+                auto& instFreqL_ref = instFreqL;
+                auto& instFreqR_ref = instFreqR;
                 const float twoPi = juce::MathConstants<float>::twoPi;
                 // initialize phase arrays to avoid large jumps on first active frame
                 if (!formantInitialized)
                 {
                     for (int k = 0; k <= half; ++k)
                     {
-                        prevPhaseL[k] = phL[k];
-                        prevPhaseR[k] = phR[k];
-                        synPhaseL[k] = phL[k];
-                        synPhaseR[k] = phR[k];
+                        prevPhaseL[k] = phL_ref[k];
+                        prevPhaseR[k] = phR_ref[k];
+                        synPhaseL[k] = phL_ref[k];
+                        synPhaseR[k] = phR_ref[k];
                     }
                     formantInitialized = true;
                 }
                 for (int k = 0; k <= half; ++k)
                 {
                     float omega = twoPi * (float)k / (float)fftSize; // rad/sample
-                    float delta = phL[k] - prevPhaseL[k] - omega * (float)fftHop;
+                    float delta = phL_ref[k] - prevPhaseL[k] - omega * (float)fftHop;
                     // wrap to [-pi, pi]
                     delta = std::fmod(delta + juce::MathConstants<float>::pi, twoPi) - juce::MathConstants<float>::pi;
-                    instFreqL[k] = omega + delta / (float)fftHop;
-                    prevPhaseL[k] = phL[k];
+                    instFreqL_ref[k] = omega + delta / (float)fftHop;
+                    prevPhaseL[k] = phL_ref[k];
 
-                    delta = phR[k] - prevPhaseR[k] - omega * (float)fftHop;
+                    delta = phR_ref[k] - prevPhaseR[k] - omega * (float)fftHop;
                     delta = std::fmod(delta + juce::MathConstants<float>::pi, twoPi) - juce::MathConstants<float>::pi;
-                    instFreqR[k] = omega + delta / (float)fftHop;
-                    prevPhaseR[k] = phR[k];
+                    instFreqR_ref[k] = omega + delta / (float)fftHop;
+                    prevPhaseR[k] = phR_ref[k];
                 }
 
                 // --- Peak-based formant shifting with collision resolution and transient bypass
-                std::vector<float> newMagL(half+1, 0.0f), newMagR(half+1, 0.0f);
-                std::vector<float> magAccumL(half+1, 0.0f), magAccumR(half+1, 0.0f);
-                std::vector<float> weightAccumL(half+1, 0.0f), weightAccumR(half+1, 0.0f);
-                std::vector<float> instFreqAccumL(half+1, 0.0f), instFreqAccumR(half+1, 0.0f);
-                std::vector<float> mappedInstFreqL(half+1, 0.0f), mappedInstFreqR(half+1, 0.0f);
+                auto& newMagL_ref = newMagL;
+                auto& newMagR_ref = newMagR;
+                auto& magAccumL_ref = magAccumL;
+                auto& magAccumR_ref = magAccumR;
+                auto& weightAccumL_ref = weightAccumL;
+                auto& weightAccumR_ref = weightAccumR;
+                auto& instFreqAccumL_ref = instFreqAccumL;
+                auto& instFreqAccumR_ref = instFreqAccumR;
+                auto& mappedInstFreqL_ref = mappedInstFreqL;
+                auto& mappedInstFreqR_ref = mappedInstFreqR;
+
+                // Clear accumulators
+                std::fill(magAccumL_ref.begin(), magAccumL_ref.end(), 0.0f);
+                std::fill(magAccumR_ref.begin(), magAccumR_ref.end(), 0.0f);
+                std::fill(weightAccumL_ref.begin(), weightAccumL_ref.end(), 0.0f);
+                std::fill(weightAccumR_ref.begin(), weightAccumR_ref.end(), 0.0f);
+                std::fill(instFreqAccumL_ref.begin(), instFreqAccumL_ref.end(), 0.0f);
+                std::fill(instFreqAccumR_ref.begin(), instFreqAccumR_ref.end(), 0.0f);
 
                 // compute a simple global threshold and spectral flux for transient detection
                 float avgMagL = 0.0f, avgMagR = 0.0f;
-                for (int k = 0; k <= half; ++k) { avgMagL += magL[k]; avgMagR += magR[k]; }
+                for (int k = 0; k <= half; ++k) { avgMagL += magL_ref[k]; avgMagR += magR_ref[k]; }
                 avgMagL /= (float)(half + 1);
                 avgMagR /= (float)(half + 1);
                 const float peakThreshFactor = 0.08f; // relative to average
@@ -392,8 +415,8 @@ void PitchShiftPluginAudioProcessor::processBlock(
                 float spectralFluxL = 0.0f, spectralFluxR = 0.0f;
                 for (int k = 0; k <= half; ++k)
                 {
-                    spectralFluxL += std::max(0.0f, magL[k] - prevMagL[k]);
-                    spectralFluxR += std::max(0.0f, magR[k] - prevMagR[k]);
+                    spectralFluxL += std::max(0.0f, magL_ref[k] - prevMagL[k]);
+                    spectralFluxR += std::max(0.0f, magR_ref[k] - prevMagR[k]);
                 }
                 float fluxNormL = spectralFluxL / (avgMagL * (float)(half + 1) + 1e-9f);
                 float fluxNormR = spectralFluxR / (avgMagR * (float)(half + 1) + 1e-9f);
@@ -404,29 +427,32 @@ void PitchShiftPluginAudioProcessor::processBlock(
                 {
                     for (int k = 0; k <= half; ++k)
                     {
-                        newMagL[k] = magL[k];
-                        newMagR[k] = magR[k];
-                        mappedInstFreqL[k] = instFreqL[k];
-                        mappedInstFreqR[k] = instFreqR[k];
+                        newMagL_ref[k] = magL_ref[k];
+                        newMagR_ref[k] = magR_ref[k];
+                        mappedInstFreqL_ref[k] = instFreqL_ref[k];
+                        mappedInstFreqR_ref[k] = instFreqR_ref[k];
                     }
                 }
                 else
                 {
                     // detect local peaks
-                    std::vector<int> peaksL, peaksR;
+                    auto& peaksL_ref = peaksL;
+                    auto& peaksR_ref = peaksR;
+                    peaksL_ref.clear();
+                    peaksR_ref.clear();
                     for (int k = 1; k < half; ++k)
                     {
-                        if (magL[k] > magL[k-1] && magL[k] >= magL[k+1] && magL[k] > threshL)
-                            peaksL.push_back(k);
-                        if (magR[k] > magR[k-1] && magR[k] >= magR[k+1] && magR[k] > threshR)
-                            peaksR.push_back(k);
+                        if (magL_ref[k] > magL_ref[k-1] && magL_ref[k] >= magL_ref[k+1] && magL_ref[k] > threshL)
+                            peaksL_ref.push_back(k);
+                        if (magR_ref[k] > magR_ref[k-1] && magR_ref[k] >= magR_ref[k+1] && magR_ref[k] > threshR)
+                            peaksR_ref.push_back(k);
                     }
 
                     // peak half-width in bins (small region around a peak)
                     const int peakHalfWidth = juce::jlimit(1, 8, fftSize / 256);
 
                     // accumulate weighted magnitudes and instFreqs into destination bins
-                    for (int pk : peaksL)
+                    for (int pk : peaksL_ref)
                     {
                         int dstCenter = juce::jlimit(0, half, (int)std::lround(pk * formantRatio));
                         for (int off = -peakHalfWidth; off <= peakHalfWidth; ++off)
@@ -435,13 +461,13 @@ void PitchShiftPluginAudioProcessor::processBlock(
                             int dstIdx = dstCenter + off;
                             if (srcIdx < 0 || srcIdx > half || dstIdx < 0 || dstIdx > half) continue;
                             float weight = 1.0f - (std::abs(off) / (float)(peakHalfWidth + 1));
-                            magAccumL[dstIdx] += magL[srcIdx] * weight;
-                            weightAccumL[dstIdx] += weight;
-                            instFreqAccumL[dstIdx] += instFreqL[srcIdx] * weight;
+                            magAccumL_ref[dstIdx] += magL_ref[srcIdx] * weight;
+                            weightAccumL_ref[dstIdx] += weight;
+                            instFreqAccumL_ref[dstIdx] += instFreqL_ref[srcIdx] * weight;
                         }
                     }
 
-                    for (int pk : peaksR)
+                    for (int pk : peaksR_ref)
                     {
                         int dstCenter = juce::jlimit(0, half, (int)std::lround(pk * formantRatio));
                         for (int off = -peakHalfWidth; off <= peakHalfWidth; ++off)
@@ -450,9 +476,9 @@ void PitchShiftPluginAudioProcessor::processBlock(
                             int dstIdx = dstCenter + off;
                             if (srcIdx < 0 || srcIdx > half || dstIdx < 0 || dstIdx > half) continue;
                             float weight = 1.0f - (std::abs(off) / (float)(peakHalfWidth + 1));
-                            magAccumR[dstIdx] += magR[srcIdx] * weight;
-                            weightAccumR[dstIdx] += weight;
-                            instFreqAccumR[dstIdx] += instFreqR[srcIdx] * weight;
+                            magAccumR_ref[dstIdx] += magR_ref[srcIdx] * weight;
+                            weightAccumR_ref[dstIdx] += weight;
+                            instFreqAccumR_ref[dstIdx] += instFreqR_ref[srcIdx] * weight;
                         }
                     }
 
@@ -460,99 +486,107 @@ void PitchShiftPluginAudioProcessor::processBlock(
                     const float backgroundMix = 0.18f;
                     for (int k = 0; k <= half; ++k)
                     {
-                        if (weightAccumL[k] > 0.0f)
+                        if (weightAccumL_ref[k] > 0.0f)
                         {
-                            newMagL[k] = magAccumL[k] / weightAccumL[k];
-                            mappedInstFreqL[k] = instFreqAccumL[k] / weightAccumL[k];
+                            newMagL_ref[k] = magAccumL_ref[k] / weightAccumL_ref[k];
+                            mappedInstFreqL_ref[k] = instFreqAccumL_ref[k] / weightAccumL_ref[k];
                         }
                         else
                         {
-                            newMagL[k] = 0.0f;
-                            mappedInstFreqL[k] = instFreqL[k];
+                            newMagL_ref[k] = 0.0f;
+                            mappedInstFreqL_ref[k] = instFreqL_ref[k];
                         }
-                        newMagL[k] += backgroundMix * magL[k];
+                        newMagL_ref[k] += backgroundMix * magL_ref[k];
 
-                        if (weightAccumR[k] > 0.0f)
+                        if (weightAccumR_ref[k] > 0.0f)
                         {
-                            newMagR[k] = magAccumR[k] / weightAccumR[k];
-                            mappedInstFreqR[k] = instFreqAccumR[k] / weightAccumR[k];
+                            newMagR_ref[k] = magAccumR_ref[k] / weightAccumR_ref[k];
+                            mappedInstFreqR_ref[k] = instFreqAccumR_ref[k] / weightAccumR_ref[k];
                         }
                         else
                         {
-                            newMagR[k] = 0.0f;
-                            mappedInstFreqR[k] = instFreqR[k];
+                            newMagR_ref[k] = 0.0f;
+                            mappedInstFreqR_ref[k] = instFreqR_ref[k];
                         }
-                        newMagR[k] += backgroundMix * magR[k];
+                        newMagR_ref[k] += backgroundMix * magR_ref[k];
                     }
 
                     // gentle normalization to avoid level jumps
                     float maxOld = 0.0001f, maxNew = 0.0001f;
-                    for (int k = 0; k <= half; ++k) { maxOld = std::max(maxOld, magL[k]); maxNew = std::max(maxNew, newMagL[k]); }
+                    for (int k = 0; k <= half; ++k) { maxOld = std::max(maxOld, magL_ref[k]); maxNew = std::max(maxNew, newMagL_ref[k]); }
                     float normL = maxOld / (maxNew + 1e-9f);
-                    for (int k = 0; k <= half; ++k) newMagL[k] *= normL;
+                    for (int k = 0; k <= half; ++k) newMagL_ref[k] *= normL;
                     maxOld = 0.0001f; maxNew = 0.0001f;
-                    for (int k = 0; k <= half; ++k) { maxOld = std::max(maxOld, magR[k]); maxNew = std::max(maxNew, newMagR[k]); }
+                    for (int k = 0; k <= half; ++k) { maxOld = std::max(maxOld, magR_ref[k]); maxNew = std::max(maxNew, newMagR_ref[k]); }
                     float normR = maxOld / (maxNew + 1e-9f);
-                    for (int k = 0; k <= half; ++k) newMagR[k] *= normR;
+                    for (int k = 0; k <= half; ++k) newMagR_ref[k] *= normR;
                 }
 
                 // Advance synthesis phase ONCE per bin using mapped instantaneous freq
                 for (int k = 0; k <= half; ++k)
                 {
-                    synPhaseL[k] += mappedInstFreqL[k] * (float)fftHop;
-                    synPhaseR[k] += mappedInstFreqR[k] * (float)fftHop;
+                    synPhaseL[k] += mappedInstFreqL_ref[k] * (float)fftHop;
+                    synPhaseR[k] += mappedInstFreqR_ref[k] * (float)fftHop;
                 }
 
                 // rebuild complex spectrum from newMag and synPhase
-                std::vector<std::complex<float>> outDataL(fftSize), outDataR(fftSize);
+                auto& outDataL_ref = outDataL;
+                auto& outDataR_ref = outDataR;
                 for (int k = 0; k <= half; ++k)
                 {
-                    float mL = newMagL[k];
+                    float mL = newMagL_ref[k];
                     float pL = synPhaseL[k];
-                    outDataL[k] = std::complex<float>(mL * std::cos(pL), mL * std::sin(pL));
+                    outDataL_ref[k] = std::complex<float>(mL * std::cos(pL), mL * std::sin(pL));
 
-                    float mR = newMagR[k];
+                    float mR = newMagR_ref[k];
                     float pR = synPhaseR[k];
-                    outDataR[k] = std::complex<float>(mR * std::cos(pR), mR * std::sin(pR));
+                    outDataR_ref[k] = std::complex<float>(mR * std::cos(pR), mR * std::sin(pR));
 
                     if (k > 0 && k < half)
                     {
                         int nk = fftSize - k;
-                        outDataL[nk] = std::conj(outDataL[k]);
-                        outDataR[nk] = std::conj(outDataR[k]);
+                        outDataL_ref[nk] = std::conj(outDataL_ref[k]);
+                        outDataR_ref[nk] = std::conj(outDataR_ref[k]);
                     }
                 }
 
                 // inverse FFT
-                fft.perform(reinterpret_cast<juce::dsp::Complex<float>*>(outDataL.data()),
-                            reinterpret_cast<juce::dsp::Complex<float>*>(outDataL.data()), true);
-                fft.perform(reinterpret_cast<juce::dsp::Complex<float>*>(outDataR.data()),
-                            reinterpret_cast<juce::dsp::Complex<float>*>(outDataR.data()), true);
+                fft.perform(reinterpret_cast<juce::dsp::Complex<float>*>(outDataL_ref.data()),
+                            reinterpret_cast<juce::dsp::Complex<float>*>(outDataL_ref.data()), true);
+                fft.perform(reinterpret_cast<juce::dsp::Complex<float>*>(outDataR_ref.data()),
+                            reinterpret_cast<juce::dsp::Complex<float>*>(outDataR_ref.data()), true);
 
                 // inverse FFT produced complex data in outData*, extract real part and apply synthesis window
-                std::vector<float> tempOutL(fftSize), tempOutR(fftSize);
+                auto& tempOutL_ref = tempOutL;
+                auto& tempOutR_ref = tempOutR;
                 for (int n = 0; n < fftSize; ++n)
                 {
-                    tempOutL[n] = outDataL[n].real() / (float)fftSize;
-                    tempOutR[n] = outDataR[n].real() / (float)fftSize;
+                    tempOutL_ref[n] = outDataL_ref[n].real() / (float)fftSize;
+                    tempOutR_ref[n] = outDataR_ref[n].real() / (float)fftSize;
                 }
-                window.multiplyWithWindowingTable(tempOutL.data(), (size_t)fftSize);
-                window.multiplyWithWindowingTable(tempOutR.data(), (size_t)fftSize);
+                window.multiplyWithWindowingTable(tempOutL_ref.data(), (size_t)fftSize);
+                window.multiplyWithWindowingTable(tempOutR_ref.data(), (size_t)fftSize);
                 // apply overlap-add compensation gain for Hann with 4x overlap
                 const float olaGain = 1.0f / 1.5f; // ~0.6667
 
                 // overlap-add into persistent OLA buffers
                 for (int n = 0; n < fftSize; ++n)
                 {
-                    olaL[n] += tempOutL[n] * olaGain;
-                    olaR[n] += tempOutR[n] * olaGain;
+                    olaL[n] += tempOutL_ref[n] * olaGain;
+                    olaR[n] += tempOutR_ref[n] * olaGain;
                 }
 
                 // output only fftHop samples from the OLA buffer
                 for (int n = 0; n < fftHop; ++n)
                 {
-                    procOutL.push_back(olaL[n]);
-                    procOutR.push_back(olaR[n]);
+                    int start1, size1, start2, size2;
+                    fftOutFifo.prepareToWrite(1, start1, size1, start2, size2);
+                    if (size1 > 0)
+                    {
+                        fftOutBuffer.setSample(0, start1, olaL[n]);
+                        fftOutBuffer.setSample(1, start1, olaR[n]);
+                        fftOutFifo.finishedWrite(size1);
+                    }
                 }
 
                 // shift OLA buffers left by hop (use memmove for efficiency)
@@ -581,20 +615,21 @@ void PitchShiftPluginAudioProcessor::processBlock(
                 // store current mags for next-frame flux detection
                 for (int k = 0; k <= half; ++k)
                 {
-                    prevMagL[k] = magL[k];
-                    prevMagR[k] = magR[k];
+                    prevMagL[k] = magL_ref[k];
+                    prevMagR[k] = magR_ref[k];
                 }
                 }
             }
 
             // consume processed output if available
             float outFFT_L = 0.0f, outFFT_R = 0.0f;
-            if (!procOutL.empty())
+            int start1, size1, start2, size2;
+            fftOutFifo.prepareToRead(1, start1, size1, start2, size2);
+            if (size1 > 0)
             {
-                outFFT_L = procOutL.front();
-                outFFT_R = procOutR.front();
-                procOutL.pop_front();
-                procOutR.pop_front();
+                outFFT_L = fftOutBuffer.getSample(0, start1);
+                outFFT_R = fftOutBuffer.getSample(1, start1);
+                fftOutFifo.finishedRead(size1);
             }
 
             // delay dry/path to match FFT latency
@@ -608,7 +643,8 @@ void PitchShiftPluginAudioProcessor::processBlock(
 
             // New policy: always output FFT stream. Pre-fill silence until FFT is primed,
             // then crossfade from delayed dry into FFT output once primed to avoid ducking.
-            bool fftPrimedNow = (procOutL.size() >= (size_t)fftHop);
+            // bool fftPrimedNow = (procOutL.size() >= (size_t)fftHop);
+            bool fftPrimedNow = true; // TODO: implement FIFO-based priming
             if (!fftPrimedNow)
             {
                 // not yet primed: output delayed dry so the plugin doesn't silence the host

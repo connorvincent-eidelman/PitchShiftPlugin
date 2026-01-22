@@ -1,14 +1,9 @@
 #pragma once
 #include <JuceHeader.h>
-#include <deque>
 
 class PitchShiftPluginAudioProcessor : public juce::AudioProcessor
 {
 public:
-    // debug HUD support (updated from audio thread once-per-block)
-    void setDebugText(const juce::String& s);
-    // Consume and clear the debug text (returns empty string if none).
-    juce::String consumeDebugText();
 
     PitchShiftPluginAudioProcessor();
     ~PitchShiftPluginAudioProcessor() override;
@@ -25,6 +20,9 @@ public:
     juce::AudioProcessorValueTreeState apvts;
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
+
+    // Debug (atomic, no strings on audio thread)
+    std::atomic<int> debugProcOutSize { 0 };
 
     //==============================================================================
     bool acceptsMidi() const override;
@@ -76,8 +74,23 @@ private:
     std::vector<float> fftBufferL;
     std::vector<float> fftBufferR;
     int fftWritePos = 0;
-    std::deque<float> procOutL;
-    std::deque<float> procOutR;
+    // ================= REALTIME-SAFE BUFFERS =================
+    // FFT working buffers (allocated once)
+    std::vector<std::complex<float>> outDataL, outDataR;
+    std::vector<float> tempInL, tempInR;
+    std::vector<float> magL, magR;
+    std::vector<float> phL, phR;
+    std::vector<float> instFreqL, instFreqR;
+    std::vector<float> newMagL, newMagR;
+    std::vector<float> mappedInstFreqL, mappedInstFreqR;
+    std::vector<float> tempOutL, tempOutR;
+    std::vector<float> magAccumL, magAccumR;
+    std::vector<float> weightAccumL, weightAccumR;
+    std::vector<float> instFreqAccumL, instFreqAccumR;
+    std::vector<int> peaksL, peaksR;
+    // Ring buffer for FFT output
+    juce::AudioBuffer<float> fftOutBuffer;
+    juce::AbstractFifo fftOutFifo { 8192 };
     // phase-vocoder state (per half-spectrum)
     std::vector<float> prevPhaseL;
     std::vector<float> prevPhaseR;
@@ -97,9 +110,6 @@ private:
     // overlap-add persistent buffer for streaming FFT output
     std::vector<float> olaL;
     std::vector<float> olaR;
-    // Debug HUD text (updated from audio thread) and dirty flag
-    juce::String debugText;
-    std::atomic<bool> debugDirty { false };
     // FFT output priming / crossfade state
     bool fftPrimed = false;
     int crossfadeSamplesRemaining = 0;
