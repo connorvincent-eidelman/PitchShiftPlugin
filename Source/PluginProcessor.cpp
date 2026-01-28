@@ -411,7 +411,6 @@ void PitchShiftPluginAudioProcessor::processBlock(
                 const float peakThreshFactor = 0.08f; // relative to average
                 float threshL = avgMagL * peakThreshFactor;
                 float threshR = avgMagR * peakThreshFactor;
-
                 float spectralFluxL = 0.0f, spectralFluxR = 0.0f;
                 for (int k = 0; k <= half; ++k)
                 {
@@ -421,20 +420,31 @@ void PitchShiftPluginAudioProcessor::processBlock(
                 float fluxNormL = spectralFluxL / (avgMagL * (float)(half + 1) + 1e-9f);
                 float fluxNormR = spectralFluxR / (avgMagR * (float)(half + 1) + 1e-9f);
                 const float fluxBypassThreshold = 0.20f; // tuned: bypass if flux ratio is high
+               
+                
+                float activity = juce::jlimit(0.0f, 1.0f, 0.5f * (fluxNormL + fluxNormR));
+                float chaos = std::fmod(activity * 123.4567f, 1.0f);
+                bool exaggerateFormant = chaos > 0.85f;
+                bool collapseSpectrum  = chaos < 0.15f;
 
-                // If transient detected, bypass formant-shifting for this frame (copy mags)
-                if (fluxNormL > fluxBypassThreshold || fluxNormR > fluxBypassThreshold)
+
+                // Branch based on detected activity chaos patterns
+                if (collapseSpectrum)
                 {
+                    // extreme abstraction: collapse toward noise / vowel blur
                     for (int k = 0; k <= half; ++k)
                     {
-                        newMagL_ref[k] = magL_ref[k];
-                        newMagR_ref[k] = magR_ref[k];
+                        newMagL_ref[k] = avgMagL * 0.2f;
+                        newMagR_ref[k] = avgMagR * 0.2f;
                         mappedInstFreqL_ref[k] = instFreqL_ref[k];
                         mappedInstFreqR_ref[k] = instFreqR_ref[k];
                     }
                 }
-                else
+                else if (exaggerateFormant)
                 {
+                    // hyper-formant shift with wildly amplified ratio
+                    float wildRatio = formantRatio * 1.8f;
+                    
                     // detect local peaks
                     auto& peaksL_ref = peaksL;
                     auto& peaksR_ref = peaksR;
@@ -448,10 +458,104 @@ void PitchShiftPluginAudioProcessor::processBlock(
                             peaksR_ref.push_back(k);
                     }
 
-                    // peak half-width in bins (small region around a peak)
                     const int peakHalfWidth = juce::jlimit(1, 8, fftSize / 256);
 
-                    // accumulate weighted magnitudes and instFreqs into destination bins
+                    // accumulate with wildRatio instead of formantRatio
+                    for (int pk : peaksL_ref)
+                    {
+                        int dstCenter = juce::jlimit(0, half, (int)std::lround(pk * wildRatio));
+                        for (int off = -peakHalfWidth; off <= peakHalfWidth; ++off)
+                        {
+                            int srcIdx = pk + off;
+                            int dstIdx = dstCenter + off;
+                            if (srcIdx < 0 || srcIdx > half || dstIdx < 0 || dstIdx > half) continue;
+                            float weight = 1.0f - (std::abs(off) / (float)(peakHalfWidth + 1));
+                            magAccumL_ref[dstIdx] += magL_ref[srcIdx] * weight;
+                            weightAccumL_ref[dstIdx] += weight;
+                            instFreqAccumL_ref[dstIdx] += instFreqL_ref[srcIdx] * weight;
+                        }
+                    }
+
+                    for (int pk : peaksR_ref)
+                    {
+                        int dstCenter = juce::jlimit(0, half, (int)std::lround(pk * wildRatio));
+                        for (int off = -peakHalfWidth; off <= peakHalfWidth; ++off)
+                        {
+                            int srcIdx = pk + off;
+                            int dstIdx = dstCenter + off;
+                            if (srcIdx < 0 || srcIdx > half || dstIdx < 0 || dstIdx > half) continue;
+                            float weight = 1.0f - (std::abs(off) / (float)(peakHalfWidth + 1));
+                            magAccumR_ref[dstIdx] += magR_ref[srcIdx] * weight;
+                            weightAccumR_ref[dstIdx] += weight;
+                            instFreqAccumR_ref[dstIdx] += instFreqR_ref[srcIdx] * weight;
+                        }
+                    }
+
+                    const float backgroundMix = 0.18f;
+                    for (int k = 0; k <= half; ++k)
+                    {
+                        if (weightAccumL_ref[k] > 0.0f)
+                        {
+                            newMagL_ref[k] = magAccumL_ref[k] / weightAccumL_ref[k];
+                            mappedInstFreqL_ref[k] = instFreqAccumL_ref[k] / weightAccumL_ref[k];
+                        }
+                        else
+                        {
+                            newMagL_ref[k] = 0.0f;
+                            mappedInstFreqL_ref[k] = instFreqL_ref[k];
+                        }
+                        newMagL_ref[k] += backgroundMix * magL_ref[k];
+
+                        if (weightAccumR_ref[k] > 0.0f)
+                        {
+                            newMagR_ref[k] = magAccumR_ref[k] / weightAccumR_ref[k];
+                            mappedInstFreqR_ref[k] = instFreqAccumR_ref[k] / weightAccumR_ref[k];
+                        }
+                        else
+                        {
+                            newMagR_ref[k] = 0.0f;
+                            mappedInstFreqR_ref[k] = instFreqR_ref[k];
+                        }
+                        newMagR_ref[k] += backgroundMix * magR_ref[k];
+                    }
+
+                    float maxOld = 0.0001f, maxNew = 0.0001f;
+                    for (int k = 0; k <= half; ++k) { maxOld = std::max(maxOld, magL_ref[k]); maxNew = std::max(maxNew, newMagL_ref[k]); }
+                    float normL = maxOld / (maxNew + 1e-9f);
+                    for (int k = 0; k <= half; ++k) newMagL_ref[k] *= normL;
+                    maxOld = 0.0001f; maxNew = 0.0001f;
+                    for (int k = 0; k <= half; ++k) { maxOld = std::max(maxOld, magR_ref[k]); maxNew = std::max(maxNew, newMagR_ref[k]); }
+                    float normR = maxOld / (maxNew + 1e-9f);
+                    for (int k = 0; k <= half; ++k) newMagR_ref[k] *= normR;
+                }
+                else if (fluxNormL > fluxBypassThreshold || fluxNormR > fluxBypassThreshold)
+                {
+                    // transient detected: bypass formant-shifting for this frame (copy mags)
+                    for (int k = 0; k <= half; ++k)
+                    {
+                        newMagL_ref[k] = magL_ref[k];
+                        newMagR_ref[k] = magR_ref[k];
+                        mappedInstFreqL_ref[k] = instFreqL_ref[k];
+                        mappedInstFreqR_ref[k] = instFreqR_ref[k];
+                    }
+                }
+                else
+                {
+                    // normal peak-based shifting
+                    auto& peaksL_ref = peaksL;
+                    auto& peaksR_ref = peaksR;
+                    peaksL_ref.clear();
+                    peaksR_ref.clear();
+                    for (int k = 1; k < half; ++k)
+                    {
+                        if (magL_ref[k] > magL_ref[k-1] && magL_ref[k] >= magL_ref[k+1] && magL_ref[k] > threshL)
+                            peaksL_ref.push_back(k);
+                        if (magR_ref[k] > magR_ref[k-1] && magR_ref[k] >= magR_ref[k+1] && magR_ref[k] > threshR)
+                            peaksR_ref.push_back(k);
+                    }
+
+                    const int peakHalfWidth = juce::jlimit(1, 8, fftSize / 256);
+
                     for (int pk : peaksL_ref)
                     {
                         int dstCenter = juce::jlimit(0, half, (int)std::lround(pk * formantRatio));
@@ -482,7 +586,6 @@ void PitchShiftPluginAudioProcessor::processBlock(
                         }
                     }
 
-                    // finalize new magnitude and mapped instantaneous frequency per bin
                     const float backgroundMix = 0.18f;
                     for (int k = 0; k <= half; ++k)
                     {
@@ -511,7 +614,6 @@ void PitchShiftPluginAudioProcessor::processBlock(
                         newMagR_ref[k] += backgroundMix * magR_ref[k];
                     }
 
-                    // gentle normalization to avoid level jumps
                     float maxOld = 0.0001f, maxNew = 0.0001f;
                     for (int k = 0; k <= half; ++k) { maxOld = std::max(maxOld, magL_ref[k]); maxNew = std::max(maxNew, newMagL_ref[k]); }
                     float normL = maxOld / (maxNew + 1e-9f);
